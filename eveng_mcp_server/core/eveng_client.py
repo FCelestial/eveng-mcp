@@ -184,14 +184,14 @@ class EVENGClientWrapper(LoggerMixin):
     
     async def ensure_connected(self) -> None:
         """Ensure client is connected, reconnect if necessary."""
-        # 先用一个简单请求验�?session 是否还有�?
+        # 先用一个简单请求验证 session 是否还有效
         if self._client and self._authenticated:
             try:
                 await asyncio.to_thread(self.api.list_folders)
                 return
             except Exception:
                 pass
-        # session 无效，重新登�?
+        # session 无效，重新登录
         await self.connect()
     
     @asynccontextmanager
@@ -208,14 +208,25 @@ class EVENGClientWrapper(LoggerMixin):
         await self.ensure_connected()
 
         try:
-            # For now, return basic connection info
-            # TODO: Implement proper server status retrieval
             status = {
                 "status": "connected",
                 "server": self.config.eveng.base_url,
                 "version": "Unknown",
                 "uptime": "Unknown"
             }
+            # Try to get real status from EVE-NG server
+            try:
+                url = f"{self.config.eveng.base_url}/api/status"
+                result = await asyncio.to_thread(
+                    self._client._make_request, "GET", url, False
+                )
+                if isinstance(result, dict) and result.get("code") == 200:
+                    sdata = result.get("data", {})
+                    if isinstance(sdata, dict):
+                        status["version"] = sdata.get("version", "Unknown")
+                        status["hostname"] = sdata.get("hostname", "Unknown")
+            except Exception:
+                pass
             self.logger.debug("Retrieved server status", status=status)
             return status
         except Exception as e:
@@ -595,13 +606,36 @@ class EVENGClientWrapper(LoggerMixin):
             raise EVENGAPIError(f"Failed to connect node to cloud: {str(e)}")
 
     async def connect_node_to_node(self, lab_path: str, src: str, src_label: str, dst: str, dst_label: str) -> Dict[str, Any]:
-        """Connect two nodes together."""
+        """Connect two nodes together. Accepts node IDs or names."""
         await self.ensure_connected()
 
         try:
-            result = await asyncio.to_thread(self.api.connect_node_to_node, lab_path, src, src_label, dst, dst_label)
+            # Resolve node IDs to names if needed (SDK uses names, not IDs)
+            try:
+                nodes = await self.list_nodes(lab_path)
+                node_data = nodes.get('data', {}) if isinstance(nodes, dict) else {}
+                # Map src/dst to actual names
+                src_name = src
+                dst_name = dst
+                if src in node_data:
+                    src_name = node_data[src].get('name', src)
+                if dst in node_data:
+                    dst_name = node_data[dst].get('name', dst)
+            except Exception:
+                src_name, dst_name = src, dst
+
+            result = await asyncio.to_thread(
+                self.api.connect_node_to_node, lab_path, src_name, src_label, dst_name, dst_label
+            )
+            if result is None:
+                result = {"status": "success", "message": "Nodes connected"}
+            elif not isinstance(result, dict):
+                result = {"status": "success", "data": str(result)}
             self.logger.info("Connected nodes", lab_path=lab_path, src=src, dst=dst)
             return result
+        except (AttributeError, TypeError) as e:
+            self.logger.warning("SDK connect failed", error=str(e))
+            raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
         except Exception as e:
             self.logger.error("Failed to connect nodes", **log_error(e, {"lab_path": lab_path, "src": src, "dst": dst}))
             raise EVENGAPIError(f"Failed to connect nodes: {str(e)}")
@@ -617,6 +651,19 @@ class EVENGClientWrapper(LoggerMixin):
         except Exception as e:
             self.logger.error("Failed to get lab topology", **log_error(e, {"lab_path": lab_path}))
             raise EVENGAPIError(f"Failed to get lab topology: {str(e)}")
+
+    async def export_lab(self, lab_path: str) -> Dict[str, Any]:
+        """Export a lab configuration."""
+        await self.ensure_connected()
+        try:
+            result = await asyncio.to_thread(self.api.export_lab, lab_path)
+            return result if result else {"status": "success", "message": "Lab exported"}
+        except (AttributeError, Exception) as e:
+            self.logger.warning("SDK export_lab missing, fallback to get_lab")
+            try:
+                return await self.get_lab(lab_path)
+            except Exception as fe:
+                raise EVENGAPIError(f"Failed to export lab: {str(fe)}")
 
 
 # Global client instance
