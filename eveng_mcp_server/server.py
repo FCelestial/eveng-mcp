@@ -1,0 +1,1 @@
+$(ssh -i ~/.openclaw/ssh/id_ed25519_star -o StrictHostKeyChecking=accept-new -o BatchMode=yes fwindemi@100.95.157.73 "powershell -c \"type E:\Dev\mcp\eveng-mcp\eveng_mcp_server\tools\lab_management.py\"" 2>/dev/null)
